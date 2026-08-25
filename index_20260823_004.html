@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>型抜きツール</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #f4f4f9;
+            margin: 0; padding: 20px;
+            text-align: center; color: #333;
+        }
+        .card {
+            background: #fff; padding: 15px; border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            max-width: 400px; margin: 0 auto;
+        }
+        .input-group { margin-bottom: 12px; text-align: left; }
+        .input-group label { display: block; font-size: 0.8rem; font-weight: bold; margin-bottom: 4px; }
+        input[type="file"] { width: 100%; box-sizing: border-box; }
+        .preview-container {
+            position: relative; width: 300px; height: 300px; margin: 15px auto;
+            background-color: #eee;
+            background-image: linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);
+            background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            border: 2px solid #ccc; border-radius: 4px; overflow: hidden;
+            touch-action: none;
+        }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        #photoCanvas { z-index: 1; cursor: grab; }
+        #photoCanvas:active { cursor: grabbing; }
+        #maskCanvas { z-index: 2; pointer-events: none; }
+        .status { font-size: 0.8rem; margin-top: 8px; color: #666; }
+        .btn {
+            background: #007aff; color: white; border: none;
+            padding: 10px 20px; font-size: 0.9rem; border-radius: 8px;
+            cursor: pointer; width: 100%; text-decoration: none;
+            display: inline-block; box-sizing: border-box; margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>型抜きツール</h1>
+        <div class="input-group">
+            <label>1. 任意型画像 (mask.pngなど) を選択</label>
+            <input type="file" id="maskInput" accept="image/*">
+        </div>
+        <div class="input-group">
+            <label>2. 切り抜く写真を選択</label>
+            <input type="file" id="imageInput" accept="image/*">
+        </div>
+        <div class="preview-container" id="container">
+            <canvas id="photoCanvas" width="300" height="300"></canvas>
+            <canvas id="maskCanvas" width="300" height="300"></canvas>
+        </div>
+        <div id="statusMsg" class="status">型画像と写真を選択してください</div>
+        <a id="downloadBtn" class="btn" style="display: none;">合成画像を保存する</a>
+    </div>
+
+    <script>
+        const maskInput = document.getElementById('maskInput');
+        const imageInput = document.getElementById('imageInput');
+        const photoCanvas = document.getElementById('photoCanvas');
+        const pCtx = photoCanvas.getContext('2d', { willReadFrequently: true });
+        const maskCanvas = document.getElementById('maskCanvas');
+        const mCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+        const statusMsg = document.getElementById('statusMsg');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const container = document.getElementById('container');
+
+        let userImg = null, maskImg = null;
+        let originalPhotoName = "photo"; // 写真のデフォルト名
+        let state = { x: 150, y: 150, scale: 1, rotation: 0 };
+
+        function isBlue(r, g, b) {
+            return b > 100 && b > r + 30 && b > g + 30;
+        }
+
+        function checkAndShowButton() {
+            if (userImg && maskImg) {
+                downloadBtn.style.display = 'inline-block';
+                statusMsg.textContent = "調整可能です";
+            } else {
+                downloadBtn.style.display = 'none';
+            }
+        }
+
+        maskInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const img = new Image();
+                img.onload = () => {
+                    maskImg = img;
+                    const w = img.naturalWidth, h = img.naturalHeight;
+                    maskCanvas.width = w; maskCanvas.height = h;
+                    photoCanvas.width = w; photoCanvas.height = h;
+                    container.style.height = (300 * (h / w)) + 'px';
+
+                    mCtx.clearRect(0, 0, w, h);
+                    mCtx.drawImage(img, 0, 0);
+                    const imgData = mCtx.getImageData(0, 0, w, h);
+                    for (let i = 0; i < imgData.data.length; i += 4) {
+                        let r = imgData.data[i], g = imgData.data[i+1], b = imgData.data[i+2];
+                        if (isBlue(r, g, b) || (r < 50 && g < 50 && b < 50)) {
+                            imgData.data[i+3] = 0;
+                        }
+                    }
+                    mCtx.putImageData(imgData, 0, 0);
+
+                    if (userImg) { drawPhoto(); updateDownload(); }
+                    checkAndShowButton();
+                };
+                img.src = ev.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            // 拡張子を除いたファイル名を取得する
+            const fullName = file.name;
+            const lastDotIndex = fullName.lastIndexOf('.');
+            originalPhotoName = lastDotIndex !== -1 ? fullName.substring(0, lastDotIndex) : fullName;
+
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const img = new Image();
+                img.onload = () => {
+                    userImg = img;
+                    state.x = photoCanvas.width / 2;
+                    state.y = photoCanvas.height / 2;
+                    state.scale = Math.max(photoCanvas.width / img.width, photoCanvas.height / img.height);
+                    state.rotation = 0;
+                    drawPhoto();
+                    updateDownload();
+                    checkAndShowButton();
+                };
+                img.src = ev.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function drawPhoto() {
+            if (!userImg) return;
+            pCtx.clearRect(0, 0, photoCanvas.width, photoCanvas.height);
+            pCtx.save();
+            pCtx.translate(state.x, state.y);
+            pCtx.rotate(state.rotation);
+            pCtx.scale(state.scale, state.scale);
+            pCtx.drawImage(userImg, -userImg.width / 2, -userImg.height / 2);
+            pCtx.restore();
+        }
+
+        let pointers = new Map(), startDist = 0, startAngle = 0, initScale = 1, initRot = 0;
+
+        photoCanvas.addEventListener('pointerdown', (e) => {
+            if (!userImg) return;
+            photoCanvas.setPointerCapture(e.pointerId);
+            pointers.set(e.pointerId, e);
+            if (pointers.size === 2) {
+                const pts = Array.from(pointers.values());
+                startDist = Math.hypot(pts[1].clientX - pts[0].clientX, pts[1].clientY - pts[0].clientY);
+                startAngle = Math.atan2(pts[1].clientY - pts[0].clientY, pts[1].clientX - pts[0].clientX);
+                initScale = state.scale; initRot = state.rotation;
+            }
+        });
+
+        photoCanvas.addEventListener('pointermove', (e) => {
+            if (!pointers.has(e.pointerId) || !userImg) return;
+            const prev = pointers.get(e.pointerId);
+            pointers.set(e.pointerId, e);
+            const factor = photoCanvas.width / photoCanvas.getBoundingClientRect().width;
+
+            if (pointers.size === 1) {
+                const dx = e.clientX - prev.clientX, dy = e.clientY - prev.clientY;
+                if (e.pointerType === 'mouse' && e.shiftKey) {
+                    state.rotation += dx * 0.01;
+                } else {
+                    state.x += dx * factor; state.y += dy * factor;
+                }
+                drawPhoto(); updateDownload();
+            } else if (pointers.size === 2) {
+                const pts = Array.from(pointers.values());
+                const dist = Math.hypot(pts[1].clientX - pts[0].clientX, pts[1].clientY - pts[0].clientY);
+                const angle = Math.atan2(pts[1].clientY - pts[0].clientY, pts[1].clientX - pts[0].clientX);
+                if (startDist > 0) {
+                    state.scale = initScale * (dist / startDist);
+                    state.rotation = initRot + (angle - startAngle);
+                    drawPhoto(); updateDownload();
+                }
+            }
+        });
+
+        const up = (e) => pointers.delete(e.pointerId);
+        photoCanvas.addEventListener('pointerup', up);
+        photoCanvas.addEventListener('pointercancel', up);
+
+        photoCanvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            if (!userImg) return;
+            state.scale *= (e.deltaY < 0 ? 1.1 : 0.9);
+            drawPhoto(); updateDownload();
+        }, { passive: false });
+
+        function updateDownload() {
+            if (!userImg || !maskImg) return;
+            const w = photoCanvas.width, h = photoCanvas.height;
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            const ctx = c.getContext('2d');
+
+            ctx.save();
+            ctx.translate(state.x, state.y);
+            ctx.rotate(state.rotation);
+            ctx.scale(state.scale, state.scale);
+            ctx.drawImage(userImg, -userImg.width / 2, -userImg.height / 2);
+            ctx.restore();
+
+            const bm = document.createElement('canvas'); bm.width = w; bm.height = h;
+            const bCtx = bm.getContext('2d');
+            bCtx.drawImage(maskImg, 0, 0);
+            const bData = bCtx.getImageData(0, 0, w, h);
+            for (let i = 0; i < bData.data.length; i += 4) {
+                let r = bData.data[i], g = bData.data[i+1], b = bData.data[i+2];
+                if (isBlue(r, g, b)) {
+                    bData.data[i+3] = 255;
+                } else {
+                    bData.data[i+3] = 0;
+                }
+            }
+            bCtx.putImageData(bData, 0, 0);
+
+            ctx.globalCompositeOperation = 'destination-in';
+            ctx.drawImage(bm, 0, 0);
+            ctx.globalCompositeOperation = 'source-over';
+
+            const wm = document.createElement('canvas'); wm.width = w; wm.height = h;
+            const wCtx = wm.getContext('2d');
+            wCtx.drawImage(maskImg, 0, 0);
+            const wData = wCtx.getImageData(0, 0, w, h);
+            for (let i = 0; i < wData.data.length; i += 4) {
+                let r = wData.data[i], g = wData.data[i+1], b = wData.data[i+2];
+                /*if (r > 200 && g > 200 && b > 200) {
+                    wData.data[i+3] = 255;
+                } else {
+                    wData.data[i+3] = 0;
+                }*/
+                if ((r < 100  && g < 100 && b < 100) ||(r < 100  && g < 100 && b <= 255) ){
+                    wData.data[i+3] = 0;
+                } else {
+                    wData.data[i+3] = 255;
+                }
+            }
+            wCtx.putImageData(wData, 0, 0);
+            ctx.drawImage(wm, 0, 0);
+
+            // 現在の日時（年・月・日・時・分・秒）を取得してフォーマット
+            const now = new Date();
+            const yyyy = now.getFullYear();
+            const MM = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ss = String(now.getSeconds()).padStart(2, '0');
+            
+            const timestamp = `${yyyy}${MM}${dd}_${hh}${mm}${ss}`;
+
+            downloadBtn.href = c.toDataURL('image/png');
+            // ファイル名：元写真名_日時分秒.png
+            downloadBtn.download = `${originalPhotoName}_${timestamp}.png`;
+        }
+    </script>
+</body>
+</html>
