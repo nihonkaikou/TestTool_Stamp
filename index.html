@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>型抜きツール 20260823_004</title>
+    <title>型抜きツール</title>
     <style>
         body {
             font-family: sans-serif;
@@ -38,13 +38,16 @@
             cursor: pointer; width: 100%; text-decoration: none;
             display: inline-block; box-sizing: border-box; margin-top: 10px;
         }
+        #resultArea { margin-top: 15px; display: none; }
+        #resultImg { max-width: 100%; border-radius: 4px; border: 1px solid #ccc; }
+        .hint { font-size: 0.75rem; color: #888; margin-top: 5px; }
     </style>
 </head>
 <body>
     <div class="card">
         <h1>型抜きツール</h1>
         <div class="input-group">
-            <label>1. 任意型画像 (mask.bmpなど) を選択</label>
+            <label>1. 任意型画像 (mask.pngなど) を選択</label>
             <input type="file" id="maskInput" accept="image/*">
         </div>
         <div class="input-group">
@@ -56,7 +59,14 @@
             <canvas id="maskCanvas" width="300" height="300"></canvas>
         </div>
         <div id="statusMsg" class="status">型画像と写真を選択してください</div>
-        <a id="downloadBtn" class="btn" style="display: none;">合成画像を保存する</a>
+        <button id="generateBtn" class="btn" style="display: none;">合成画像を生成する</button>
+        
+        <div id="resultArea">
+            <p style="font-size: 0.85rem; font-weight: bold; margin-bottom: 5px;">下の画像を長押しして保存してください</p>
+            <img id="resultImg" alt="合成プレビュー">
+            <div class="hint">※ iPhoneの場合は画像を長押しして「写真に保存」を選択してください</div>
+            <a id="downloadBtn" class="btn" download="image.png" style="display: none;">ファイルをダウンロード</a>
+        </div>
     </div>
 
     <script>
@@ -67,11 +77,14 @@
         const maskCanvas = document.getElementById('maskCanvas');
         const mCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
         const statusMsg = document.getElementById('statusMsg');
-        const downloadBtn = document.getElementById('downloadBtn');
+        const generateBtn = document.getElementById('generateBtn');
         const container = document.getElementById('container');
+        const resultArea = document.getElementById('resultArea');
+        const resultImg = document.getElementById('resultImg');
+        const downloadBtn = document.getElementById('downloadBtn');
 
         let userImg = null, maskImg = null;
-        let originalPhotoName = "photo"; // 写真のデフォルト名
+        let originalPhotoName = "photo";
         let state = { x: 150, y: 150, scale: 1, rotation: 0 };
 
         function isBlue(r, g, b) {
@@ -80,10 +93,10 @@
 
         function checkAndShowButton() {
             if (userImg && maskImg) {
-                downloadBtn.style.display = 'inline-block';
-                statusMsg.textContent = "調整可能です";
+                generateBtn.style.display = 'inline-block';
+                statusMsg.textContent = "調整可能です。「合成画像を生成する」を押してください";
             } else {
-                downloadBtn.style.display = 'none';
+                generateBtn.style.display = 'none';
             }
         }
 
@@ -111,7 +124,7 @@
                     }
                     mCtx.putImageData(imgData, 0, 0);
 
-                    if (userImg) { drawPhoto(); updateDownload(); }
+                    if (userImg) { drawPhoto(); }
                     checkAndShowButton();
                 };
                 img.src = ev.target.result;
@@ -123,7 +136,6 @@
             const file = e.target.files[0];
             if (!file) return;
             
-            // 拡張子を除いたファイル名を取得する
             const fullName = file.name;
             const lastDotIndex = fullName.lastIndexOf('.');
             originalPhotoName = lastDotIndex !== -1 ? fullName.substring(0, lastDotIndex) : fullName;
@@ -138,7 +150,6 @@
                     state.scale = Math.max(photoCanvas.width / img.width, photoCanvas.height / img.height);
                     state.rotation = 0;
                     drawPhoto();
-                    updateDownload();
                     checkAndShowButton();
                 };
                 img.src = ev.target.result;
@@ -184,7 +195,7 @@
                 } else {
                     state.x += dx * factor; state.y += dy * factor;
                 }
-                drawPhoto(); updateDownload();
+                drawPhoto();
             } else if (pointers.size === 2) {
                 const pts = Array.from(pointers.values());
                 const dist = Math.hypot(pts[1].clientX - pts[0].clientX, pts[1].clientY - pts[0].clientY);
@@ -192,7 +203,7 @@
                 if (startDist > 0) {
                     state.scale = initScale * (dist / startDist);
                     state.rotation = initRot + (angle - startAngle);
-                    drawPhoto(); updateDownload();
+                    drawPhoto();
                 }
             }
         });
@@ -205,10 +216,11 @@
             e.preventDefault();
             if (!userImg) return;
             state.scale *= (e.deltaY < 0 ? 1.1 : 0.9);
-            drawPhoto(); updateDownload();
+            drawPhoto();
         }, { passive: false });
 
-        function updateDownload() {
+        // 合成画像を生成してプレビュー表示する処理
+        generateBtn.addEventListener('click', () => {
             if (!userImg || !maskImg) return;
             const w = photoCanvas.width, h = photoCanvas.height;
             const c = document.createElement('canvas');
@@ -246,11 +258,6 @@
             const wData = wCtx.getImageData(0, 0, w, h);
             for (let i = 0; i < wData.data.length; i += 4) {
                 let r = wData.data[i], g = wData.data[i+1], b = wData.data[i+2];
-                /*if (r > 200 && g > 200 && b > 200) {
-                    wData.data[i+3] = 255;
-                } else {
-                    wData.data[i+3] = 0;
-                }*/
                 if ((r < 100  && g < 100 && b < 100) ||(r < 100  && g < 100 && b <= 255) ){
                     wData.data[i+3] = 0;
                 } else {
@@ -260,7 +267,6 @@
             wCtx.putImageData(wData, 0, 0);
             ctx.drawImage(wm, 0, 0);
 
-            // 現在の日時（年・月・日・時・分・秒）を取得してフォーマット
             const now = new Date();
             const yyyy = now.getFullYear();
             const MM = String(now.getMonth() + 1).padStart(2, '0');
@@ -268,13 +274,19 @@
             const hh = String(now.getHours()).padStart(2, '0');
             const mm = String(now.getMinutes()).padStart(2, '0');
             const ss = String(now.getSeconds()).padStart(2, '0');
-            
             const timestamp = `${yyyy}${MM}${dd}_${hh}${mm}${ss}`;
 
-            downloadBtn.href = c.toDataURL('image/png');
-            // ファイル名：元写真名_日時分秒.png
+            const dataUrl = c.toDataURL('image/png');
+            resultImg.src = dataUrl;
+            
+            // PC向けのダウンロード用リンク設定
+            downloadBtn.href = dataUrl;
             downloadBtn.download = `${originalPhotoName}_${timestamp}.png`;
-        }
+            
+            // プレビューエリアを表示
+            resultArea.style.display = 'block';
+            resultArea.scrollIntoView({ behavior: 'smooth' });
+        });
     </script>
 </body>
 </html>
