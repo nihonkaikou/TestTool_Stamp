@@ -18,7 +18,7 @@
         }
         .input-group { margin-bottom: 12px; text-align: left; }
         .input-group label { display: block; font-size: 0.8rem; font-weight: bold; margin-bottom: 4px; }
-        input[type="file"] { width: 100%; box-sizing: border-box; }
+        input[type="file"], select { width: 100%; box-sizing: border-box; padding: 6px; }
         .preview-container {
             position: relative; width: 300px; height: 300px; margin: 15px auto;
             background-color: #eee;
@@ -47,8 +47,12 @@
     <div class="card">
         <h1>型抜きツール</h1>
         <div class="input-group">
-            <label>1. 任意型画像 (mask.pngなど) を選択</label>
+            <label>1. 型画像を選択</label>
+            <select id="maskSelect" style="margin-bottom: 6px;">
+                <option value="">imageフォルダから選択...</option>
+            </select>
             <input type="file" id="maskInput" accept="image/*">
+            <div class="hint">※または任意のファイルを直接選択</div>
         </div>
         <div class="input-group">
             <label>2. 切り抜く写真を選択</label>
@@ -70,6 +74,21 @@
     </div>
 
     <script>
+        const presetMasks = [
+            "mask_Photo_type01.bmp",
+            "mask_stamp_sq_type01.bmp",
+            "mask_stamp_sq_type02.bmp",
+            "mask_stamp_sq_type02.bmp",
+            "mask_stamp_sq_type03.bmp",
+            "mask_stamp_tate_type01.bmp",
+            "mask_stamp_tate_type02.bmp",
+            "mask_stamp_tate_type03.bmp",
+            "mask_stamp_yoko_type01.bmp",
+            "mask_stamp_yoko_type02.bmp",
+            "mask_stamp_yoko_type03.bmp"
+        ];
+
+        const maskSelect = document.getElementById('maskSelect');
         const maskInput = document.getElementById('maskInput');
         const imageInput = document.getElementById('imageInput');
         const photoCanvas = document.getElementById('photoCanvas');
@@ -87,6 +106,13 @@
         let originalPhotoName = "photo";
         let state = { x: 150, y: 150, scale: 1, rotation: 0 };
 
+        presetMasks.forEach(filename => {
+            const opt = document.createElement('option');
+            opt.value = `image/${filename}`;
+            opt.textContent = filename;
+            maskSelect.appendChild(opt);
+        });
+
         function isBlue(r, g, b) {
             return b > 100 && b > r + 30 && b > g + 30;
         }
@@ -100,34 +126,60 @@
             }
         }
 
+        // 共通の画像読み込み処理（DataURLを受け取るように変更）
+        function loadMaskImage(dataUrl) {
+            const img = new Image();
+            img.onload = () => {
+                maskImg = img;
+                const w = img.naturalWidth, h = img.naturalHeight;
+                maskCanvas.width = w; maskCanvas.height = h;
+                photoCanvas.width = w; photoCanvas.height = h;
+                container.style.height = (300 * (h / w)) + 'px';
+
+                mCtx.clearRect(0, 0, w, h);
+                mCtx.drawImage(img, 0, 0);
+                const imgData = mCtx.getImageData(0, 0, w, h);
+                for (let i = 0; i < imgData.data.length; i += 4) {
+                    let r = imgData.data[i], g = imgData.data[i+1], b = imgData.data[i+2];
+                    if (isBlue(r, g, b) || (r < 50 && g < 50 && b < 50)) {
+                        imgData.data[i+3] = 0;
+                    }
+                }
+                mCtx.putImageData(imgData, 0, 0);
+
+                if (userImg) { drawPhoto(); }
+                checkAndShowButton();
+            };
+            img.src = dataUrl;
+        }
+
+        // プルダウンから選択されたとき（fetch経由で安全に読み込む）
+        maskSelect.addEventListener('change', async (e) => {
+            const path = e.target.value;
+            if (!path) return;
+            maskInput.value = ""; // ファイル選択をクリア
+            
+            try {
+                const response = await fetch(path);
+                const blob = await response.blob();
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    loadMaskImage(ev.target.result);
+                };
+                reader.readAsDataURL(blob);
+            } catch (err) {
+                alert("画像ファイルの読み込みに失敗しました。ローカルサーバー経由（http://...）で開いているかご確認ください。");
+            }
+        });
+
+        // 任意ファイルを選択したとき
         maskInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
+            maskSelect.value = ""; // プルダウン選択をクリア
             const reader = new FileReader();
             reader.onload = (ev) => {
-                const img = new Image();
-                img.onload = () => {
-                    maskImg = img;
-                    const w = img.naturalWidth, h = img.naturalHeight;
-                    maskCanvas.width = w; maskCanvas.height = h;
-                    photoCanvas.width = w; photoCanvas.height = h;
-                    container.style.height = (300 * (h / w)) + 'px';
-
-                    mCtx.clearRect(0, 0, w, h);
-                    mCtx.drawImage(img, 0, 0);
-                    const imgData = mCtx.getImageData(0, 0, w, h);
-                    for (let i = 0; i < imgData.data.length; i += 4) {
-                        let r = imgData.data[i], g = imgData.data[i+1], b = imgData.data[i+2];
-                        if (isBlue(r, g, b) || (r < 50 && g < 50 && b < 50)) {
-                            imgData.data[i+3] = 0;
-                        }
-                    }
-                    mCtx.putImageData(imgData, 0, 0);
-
-                    if (userImg) { drawPhoto(); }
-                    checkAndShowButton();
-                };
-                img.src = ev.target.result;
+                loadMaskImage(ev.target.result);
             };
             reader.readAsDataURL(file);
         });
@@ -219,7 +271,6 @@
             drawPhoto();
         }, { passive: false });
 
-        // 合成画像を生成してプレビュー表示する処理
         generateBtn.addEventListener('click', () => {
             if (!userImg || !maskImg) return;
             const w = photoCanvas.width, h = photoCanvas.height;
@@ -279,11 +330,9 @@
             const dataUrl = c.toDataURL('image/png');
             resultImg.src = dataUrl;
             
-            // PC向けのダウンロード用リンク設定
             downloadBtn.href = dataUrl;
             downloadBtn.download = `${originalPhotoName}_${timestamp}.png`;
             
-            // プレビューエリアを表示
             resultArea.style.display = 'block';
             resultArea.scrollIntoView({ behavior: 'smooth' });
         });
